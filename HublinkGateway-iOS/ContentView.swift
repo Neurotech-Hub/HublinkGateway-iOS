@@ -49,20 +49,16 @@ class AppState: ObservableObject {
         // Cancel existing timer
         clearDevicesTimer?.invalidate()
         
-        log("Scheduling device list clear in 30 seconds")
-        
         // Schedule new timer to clear devices after 30 seconds
-        clearDevicesTimer = Timer.scheduledTimer(withTimeInterval: 30.0, repeats: false) { _ in
+        clearDevicesTimer = Timer.scheduledTimer(withTimeInterval: 30.0, repeats: false) { [weak self] _ in
             DispatchQueue.main.async {
-                self.discoveredDevices.removeAll()
+                self?.discoveredDevices.removeAll()
             }
         }
+        RunLoop.main.add(clearDevicesTimer!, forMode: .common)
     }
     
     func cancelClearDevices() {
-        if clearDevicesTimer != nil {
-            log("Cancelled pending device list clear")
-        }
         clearDevicesTimer?.invalidate()
         clearDevicesTimer = nil
     }
@@ -571,7 +567,7 @@ struct ContentView: View {
                     Spacer()
                     Button("Copy") {
                         UIPasteboard.general.string = appState.receivedFileContent
-                        appState.log("Copied file content to clipboard (\(appState.receivedFileContent.count) characters)")
+                        appState.log("✓ Copied file content to clipboard (\(appState.receivedFileContent.count) characters)")
                     }
                     .buttonStyle(.bordered)
                     .font(.system(size: 12, weight: .medium, design: .default))
@@ -624,6 +620,7 @@ struct ContentView: View {
                 Text("This will clear all memory on the device. Are you sure you want to continue?")
             }
         }
+    }
     
     // MARK: - Terminal View
     private var terminalView: some View {
