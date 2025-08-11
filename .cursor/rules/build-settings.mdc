@@ -1,0 +1,26 @@
+# Build Settings and Plist Management
+
+The user manages all build settings, Info.plist configuration, and project settings directly through Xcode. 
+
+**Do not:**
+- Create or modify Info.plist files manually
+- Edit project.pbxproj files directly
+- Modify build settings in code
+- Add Bluetooth permissions or other plist keys programmatically
+
+**Instead:**
+- Focus on Swift code implementation
+- Let the user handle all Xcode project configuration
+- Assume proper permissions and settings are configured in Xcode
+- Provide guidance on what settings need to be configured if needed
+
+The user will handle:
+- Bluetooth usage descriptions in Info.plist
+- Build configurations and targets
+- Deployment settings
+- Code signing and provisioning
+- Any other Xcode-specific configurations
+description:
+globs:
+alwaysApply: false
+---
