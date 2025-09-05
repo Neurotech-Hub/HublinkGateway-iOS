@@ -29,7 +29,7 @@ class AppState: ObservableObject {
     @Published var requestFileName = ""
     @Published var receivedFileContent = ""
     @Published var showClearMemoryAlert = false
-    @Published var clearMemoryConfirmed = false
+    @Published var clearMemoryStep = 1
     
     private var clearDevicesTimer: Timer?
     
@@ -165,6 +165,20 @@ class BLEManager: NSObject, ObservableObject {
         }
     }
     
+    func setOperatingMode(_ mode: Int) {
+        guard let characteristic = gatewayCharacteristic else {
+            appState.log("ERROR: Gateway characteristic not available")
+            return
+        }
+        
+        let payload = "{\"operatingMode\":\(mode)}"
+        
+        if let data = payload.data(using: .utf8) {
+            connectedPeripheral?.writeValue(data, for: characteristic, type: .withResponse)
+            appState.log("SENT: \(payload)")
+        }
+    }
+    
     func requestFilenames() {
         guard let characteristic = filenameCharacteristic else {
             appState.log("ERROR: Filename characteristic not available")
@@ -234,6 +248,9 @@ extension BLEManager: CBCentralManagerDelegate {
         appState.connectionStatus = "Connected to \(peripheral.name ?? "Unknown")"
         appState.log("CONNECTED: \(peripheral.name ?? "Unknown")")
         
+        // Clear file content on new connection
+        appState.receivedFileContent = ""
+        
         connectedPeripheral = peripheral
         peripheral.delegate = self
         peripheral.discoverServices([HublinkUUIDs.service])
@@ -265,8 +282,9 @@ extension BLEManager: CBCentralManagerDelegate {
         // Clear any pending timers
         appState.cancelClearDevices()
         
-        // Clear the request filename field
+        // Clear the request filename field and file content
         appState.requestFileName = ""
+        appState.receivedFileContent = ""
     }
 }
 
@@ -525,9 +543,37 @@ struct ContentView: View {
                 .buttonStyle(.bordered)
                 
                 Button(action: {
+                    appState.clearMemoryStep = 1
                     appState.showClearMemoryAlert = true
                 }) {
                     Text("Clear Memory")
+                        .font(.system(size: 14, weight: .medium, design: .default))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 36)
+                }
+                .buttonStyle(.bordered)
+            }
+            
+            // Operating mode buttons
+            HStack(spacing: 12) {
+                Button(action: {
+                    bleManager.setOperatingMode(0)
+                }) {
+                    Text("Mode 0")
+                        .font(.system(size: 14, weight: .medium, design: .default))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 36)
+                }
+                .buttonStyle(.bordered)
+                
+                Button(action: {
+                    bleManager.setOperatingMode(1)
+                }) {
+                    Text("Mode 1")
                         .font(.system(size: 14, weight: .medium, design: .default))
                         .lineLimit(1)
                         .minimumScaleFactor(0.8)
@@ -600,24 +646,25 @@ struct ContentView: View {
         .background(Color(.systemBackground))
         .alert("Clear Memory", isPresented: $appState.showClearMemoryAlert) {
             Button("Cancel", role: .cancel) {
-                appState.clearMemoryConfirmed = false
+                appState.clearMemoryStep = 1
             }
-            Button("Clear Memory", role: .destructive) {
-                if appState.clearMemoryConfirmed {
-                    // Second confirmation - actually clear memory
-                    bleManager.clearMemory()
-                    appState.clearMemoryConfirmed = false
+            Button(appState.clearMemoryStep == 1 ? "Continue" : "Clear Memory", role: .destructive) {
+                if appState.clearMemoryStep == 1 {
+                    appState.clearMemoryStep = 2
+                    // Show the same alert again with different content
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                        appState.showClearMemoryAlert = true
+                    }
                 } else {
-                    // First confirmation - show second alert
-                    appState.clearMemoryConfirmed = true
-                    appState.showClearMemoryAlert = true
+                    bleManager.clearMemory()
+                    appState.clearMemoryStep = 1
                 }
             }
         } message: {
-            if appState.clearMemoryConfirmed {
-                Text("This will permanently clear all memory on the device. This action cannot be undone. Are you absolutely sure?")
-            } else {
+            if appState.clearMemoryStep == 1 {
                 Text("This will clear all memory on the device. Are you sure you want to continue?")
+            } else {
+                Text("This will permanently clear all memory on the device. This action cannot be undone. Are you absolutely sure?")
             }
         }
     }
@@ -646,7 +693,7 @@ struct ContentView: View {
             }
         }
         .background(Color(.systemGray6))
-        .frame(maxHeight: 200)
+        .frame(maxHeight: 150)
     }
 }
 
