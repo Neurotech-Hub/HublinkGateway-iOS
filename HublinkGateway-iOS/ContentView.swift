@@ -7,6 +7,7 @@
 
 import SwiftUI
 import CoreBluetooth
+import UniformTypeIdentifiers
 
 // MARK: - BLE UUIDs
 struct HublinkUUIDs {
@@ -27,11 +28,30 @@ class AppState: ObservableObject {
     @Published var terminalLog: [String] = []
     @Published var connectionStatus = "Ready"
     @Published var requestFileName = ""
+    @Published var availableFiles: [String] = []
     @Published var receivedFileContent = ""
     @Published var showClearMemoryAlert = false
-    @Published var clearMemoryStep = 1
+    @Published var showShelfModeAlert = false
+    @Published var showShareSheet = false
+    @Published var showOperatingModeWarning = false
+    @Published var currentTime = ""
+    @Published var operatingModeSet = false
+    @Published var selectedOperatingMode: Int? = nil
+    @Published var showSettingsSheet = false
+    
+    // Social Mode Settings (Mode 0)
+    @Published var advInterval = 5
+    @Published var scanInterval = 20
+    
+    // Electric Mode Settings (Mode 1) - ADC Configuration
+    @Published var adcMode = 0
+    @Published var adcThreshold = 100
+    @Published var adcBufferSize = 1000
+    @Published var adcDebounce = 5000
+    @Published var adcPeaksOnly = false
     
     private var clearDevicesTimer: Timer?
+    private var clockTimer: Timer?
     
     func log(_ message: String) {
         let timestamp = DateFormatter.logFormatter.string(from: Date())
@@ -61,6 +81,44 @@ class AppState: ObservableObject {
     func cancelClearDevices() {
         clearDevicesTimer?.invalidate()
         clearDevicesTimer = nil
+    }
+    
+    func createShareableFile() -> URL? {
+        guard !receivedFileContent.isEmpty else { return nil }
+        
+        let dateFormatter = DateFormatter()
+        dateFormatter.dateFormat = "yyyyMMddHHmmss"
+        let timestamp = dateFormatter.string(from: Date())
+        
+        let requestedFilename = requestFileName.isEmpty ? "unknown" : requestFileName
+        let filename = "hublink_file_content_\(timestamp)_\(requestedFilename).txt"
+        let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(filename)
+        
+        do {
+            try receivedFileContent.write(to: tempURL, atomically: true, encoding: .utf8)
+            return tempURL
+        } catch {
+            log("ERROR: Failed to create shareable file - \(error.localizedDescription)")
+            return nil
+        }
+    }
+    
+    func startClock() {
+        updateTime()
+        clockTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
+            self.updateTime()
+        }
+    }
+    
+    func stopClock() {
+        clockTimer?.invalidate()
+        clockTimer = nil
+    }
+    
+    private func updateTime() {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "dd MMM yy - HH:mm:ss"
+        currentTime = formatter.string(from: Date())
     }
 }
 
@@ -117,6 +175,18 @@ class BLEManager: NSObject, ObservableObject {
     }
     
     func disconnect() {
+        // Check if operating mode has been set
+        if !appState.operatingModeSet {
+            appState.showOperatingModeWarning = true
+            return
+        }
+        
+        if let peripheral = connectedPeripheral {
+            centralManager?.cancelPeripheralConnection(peripheral)
+        }
+    }
+    
+    func forceDisconnect() {
         if let peripheral = connectedPeripheral {
             centralManager?.cancelPeripheralConnection(peripheral)
         }
@@ -165,6 +235,20 @@ class BLEManager: NSObject, ObservableObject {
         }
     }
     
+    func resetToShelfMode() {
+        guard let characteristic = gatewayCharacteristic else {
+            appState.log("ERROR: Gateway characteristic not available")
+            return
+        }
+        
+        let payload = "{\"reset\": true}"
+        
+        if let data = payload.data(using: .utf8) {
+            connectedPeripheral?.writeValue(data, for: characteristic, type: .withResponse)
+            appState.log("SENT: \(payload)")
+        }
+    }
+    
     func setOperatingMode(_ mode: Int) {
         guard let characteristic = gatewayCharacteristic else {
             appState.log("ERROR: Gateway characteristic not available")
@@ -176,6 +260,46 @@ class BLEManager: NSObject, ObservableObject {
         if let data = payload.data(using: .utf8) {
             connectedPeripheral?.writeValue(data, for: characteristic, type: .withResponse)
             appState.log("SENT: \(payload)")
+            
+            // Update operating mode state
+            appState.operatingModeSet = true
+            appState.selectedOperatingMode = mode
+        }
+    }
+    
+    func saveSettings() {
+        guard let characteristic = gatewayCharacteristic,
+              let mode = appState.selectedOperatingMode else {
+            appState.log("ERROR: Gateway characteristic not available or no mode selected")
+            return
+        }
+        
+        var command: [String: Any] = ["operatingMode": mode]
+        
+        if mode == 0 {
+            // Social Mode - add advertising and scanning intervals
+            command["advInterval"] = appState.advInterval
+            command["scanInterval"] = appState.scanInterval
+        } else if mode == 1 {
+            // Electric Mode - add ADC configuration
+            command["adcMode"] = appState.adcMode
+            command["adcThreshold"] = appState.adcThreshold
+            command["adcBufferSize"] = appState.adcBufferSize
+            command["adcDebounce"] = appState.adcDebounce
+            command["adcPeaksOnly"] = appState.adcPeaksOnly
+        }
+        
+        do {
+            let jsonData = try JSONSerialization.data(withJSONObject: command)
+            if let payload = String(data: jsonData, encoding: .utf8) {
+                connectedPeripheral?.writeValue(jsonData, for: characteristic, type: .withResponse)
+                appState.log("SENT: \(payload)")
+                
+                // Update operating mode state
+                appState.operatingModeSet = true
+            }
+        } catch {
+            appState.log("ERROR: Failed to serialize settings - \(error.localizedDescription)")
         }
     }
     
@@ -204,6 +328,19 @@ class BLEManager: NSObject, ObservableObject {
         if let data = filename.data(using: .utf8) {
             connectedPeripheral?.writeValue(data, for: characteristic, type: .withResponse)
             appState.log("SENT: Request file transfer for '\(filename)'")
+        }
+    }
+    
+    private func checkAndSendInitialTimestamp() {
+        // Check if all required characteristics are discovered
+        guard gatewayCharacteristic != nil else {
+            // Still discovering characteristics, wait for next discovery
+            return
+        }
+        
+        // Send timestamp automatically after a brief delay
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            self.sendTimestamp()
         }
     }
 }
@@ -245,11 +382,15 @@ extension BLEManager: CBCentralManagerDelegate {
         
         appState.isConnected = true
         appState.connectedDevice = peripheral
-        appState.connectionStatus = "Connected to \(peripheral.name ?? "Unknown")"
+        appState.connectionStatus = peripheral.name ?? "Unknown"
         appState.log("CONNECTED: \(peripheral.name ?? "Unknown")")
         
         // Clear file content on new connection
         appState.receivedFileContent = ""
+        
+        // Reset operating mode state for new connection
+        appState.operatingModeSet = false
+        appState.selectedOperatingMode = nil
         
         connectedPeripheral = peripheral
         peripheral.delegate = self
@@ -282,9 +423,13 @@ extension BLEManager: CBCentralManagerDelegate {
         // Clear any pending timers
         appState.cancelClearDevices()
         
-        // Clear the request filename field and file content
+        // Clear the request filename field, available files, and file content
         appState.requestFileName = ""
+        appState.availableFiles = []
         appState.receivedFileContent = ""
+        
+        // Hide share sheet if it's open
+        appState.showShareSheet = false
     }
 }
 
@@ -333,6 +478,9 @@ extension BLEManager: CBPeripheralDelegate {
         if let fileTransferChar = fileTransferCharacteristic {
             peripheral.setNotifyValue(true, for: fileTransferChar)
         }
+        
+        // Check if all required characteristics are discovered and send timestamp automatically
+        checkAndSendInitialTimestamp()
     }
     
     func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
@@ -341,33 +489,56 @@ extension BLEManager: CBPeripheralDelegate {
             return
         }
         
-        if let data = characteristic.value,
-           let string = String(data: data, encoding: .utf8) {
-            appState.log("RECEIVED: \(string)")
-            
-            // Check if this is a filename response and auto-fill the first filename
+        guard let data = characteristic.value,
+              let string = String(data: data, encoding: .utf8) else {
+            appState.log("ERROR: Failed to decode received data as UTF-8")
+            return
+        }
+        
+        appState.log("RECEIVED: \(string)")
+        
+        // Handle NFF (No File Found) response
+        if string.trimmingCharacters(in: .whitespacesAndNewlines) == "NFF" {
+            DispatchQueue.main.async {
+                self.appState.log("ERROR: File not found on device")
+                self.appState.receivedFileContent = ""
+            }
+            return
+        }
+        
+        // Handle EOF in file transfer (end of file data)
+        if string.trimmingCharacters(in: .whitespacesAndNewlines) == "EOF" {
+            DispatchQueue.main.async {
+                self.appState.log("✓ File transfer completed")
+            }
+            return
+        }
+        
+            // Check if this is a filename response and populate the file list
             if string.contains("|") && string.contains(";") && string.contains("EOF") {
                 let components = string.components(separatedBy: ";")
+                var files: [String] = []
+                
                 for component in components {
                     if component.contains("|") && !component.contains("EOF") {
                         let filename = component.components(separatedBy: "|").first ?? ""
                         if !filename.isEmpty {
-                            DispatchQueue.main.async {
-                                self.appState.requestFileName = filename
-                            }
-                            break
+                            files.append(filename)
                         }
                     }
                 }
-            }
-        } else if let data = characteristic.value {
-            // Handle binary file data
-            if characteristic.uuid == HublinkUUIDs.fileTransfer {
+                
                 DispatchQueue.main.async {
-                    // Convert bytes to hex string for display
-                    let hexString = data.map { String(format: "%02X", $0) }.joined()
-                    self.appState.receivedFileContent += hexString
+                    self.appState.availableFiles = files
+                    // Auto-select first file if available
+                    if let firstFile = files.first {
+                        self.appState.requestFileName = firstFile
+                    }
                 }
+            } else if characteristic.uuid == HublinkUUIDs.fileTransfer {
+            // Handle file transfer data (hex strings from hardware)
+            DispatchQueue.main.async {
+                self.appState.receivedFileContent += string
             }
         }
     }
@@ -391,6 +562,7 @@ struct ContentView: View {
         let state = AppState()
         _appState = StateObject(wrappedValue: state)
         _bleManager = StateObject(wrappedValue: BLEManager(appState: state))
+        state.startClock()
     }
     
     var body: some View {
@@ -425,35 +597,41 @@ struct ContentView: View {
                     .foregroundColor(.primary)
             }
             
-            Button(action: {
-                if appState.isScanning {
-                    bleManager.stopScanning()
-                } else {
-                    bleManager.startScanning()
-                }
-            }) {
-                Text(appState.isScanning ? "Stop" : "Scan")
-                    .font(.system(size: 20, weight: .semibold, design: .default))
-                    .foregroundColor(.white)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 56)
-                    .background(
-                        LinearGradient(
-                            colors: [
-                                Color(red: 0.42, green: 0.05, blue: 0.68), // Deep purple ~#6A0DAD
-                                Color(red: 1.0, green: 0.0, blue: 1.0)     // Vibrant fuchsia ~#FF00FF
-                            ],
-                            startPoint: .leading,
-                            endPoint: .trailing
+            if !appState.isConnected {
+                Button(action: {
+                    if appState.isScanning {
+                        bleManager.stopScanning()
+                    } else {
+                        bleManager.startScanning()
+                    }
+                }) {
+                    Text(appState.isScanning ? "Stop" : "Scan")
+                        .font(.system(size: 20, weight: .semibold, design: .default))
+                        .foregroundColor(.white)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 56)
+                        .background(
+                            LinearGradient(
+                                colors: [
+                                    Color(red: 0.42, green: 0.05, blue: 0.68), // Deep purple ~#6A0DAD
+                                    Color(red: 1.0, green: 0.0, blue: 1.0)     // Vibrant fuchsia ~#FF00FF
+                                ],
+                                startPoint: .leading,
+                                endPoint: .trailing
+                            )
                         )
-                    )
-                    .clipShape(RoundedRectangle(cornerRadius: 16))
-                    .shadow(color: .blue.opacity(0.3), radius: 8, x: 0, y: 4)
+                        .clipShape(RoundedRectangle(cornerRadius: 16))
+                        .shadow(color: .blue.opacity(0.3), radius: 8, x: 0, y: 4)
+                }
             }
-            .disabled(appState.isConnected)
-            .opacity(appState.isConnected ? 0.6 : 1.0)
+            
+            // Live Clock
+            Text(appState.currentTime)
+                .font(.system(size: 12, weight: .regular, design: .monospaced))
+                .foregroundColor(.white)
+                .padding(.top, 4)
         }
         .padding(.horizontal, 32)
         .padding(.vertical, 16)
@@ -466,11 +644,10 @@ struct ContentView: View {
                 HStack {
                     VStack(alignment: .leading, spacing: 4) {
                         Text(device.name ?? "Unknown")
-                            .font(.custom("Outfit", size: 16))
-                            .fontWeight(.medium)
+                            .font(.system(size: 16, weight: .medium, design: .default))
                         
                         Text(device.identifier.uuidString)
-                            .font(.custom("Outfit", size: 12))
+                            .font(.system(size: 12, weight: .regular, design: .default))
                             .foregroundColor(.secondary)
                     }
                     
@@ -499,10 +676,22 @@ struct ContentView: View {
         VStack(spacing: 20) {
             // Header with disconnect
             HStack {
-                Text("Connected to \(appState.connectedDevice?.name ?? "Device")")
+                Text(appState.connectedDevice?.name ?? "Not Connected")
                     .font(.system(size: 16, weight: .medium, design: .default))
-                    .foregroundColor(.green)
+                    .foregroundColor(.white)
                 Spacer()
+                Button(action: {
+                    appState.showShelfModeAlert = true
+                }) {
+                    Text("Shelf Mode")
+                        .font(.system(size: 14, weight: .medium, design: .default))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                        .frame(height: 36)
+                }
+                .buttonStyle(.bordered)
+                .foregroundColor(.orange)
+                
                 Button(action: {
                     bleManager.disconnect()
                 }) {
@@ -516,12 +705,13 @@ struct ContentView: View {
                 .foregroundColor(.red)
             }
             
-            // JSON commands - single row
+            // Operating mode buttons
             HStack(spacing: 12) {
                 Button(action: {
-                    bleManager.sendTimestamp()
+                    appState.selectedOperatingMode = 0
+                    appState.showSettingsSheet = true
                 }) {
-                    Text("Timestamp")
+                    Text("Social Mode")
                         .font(.system(size: 14, weight: .medium, design: .default))
                         .lineLimit(1)
                         .minimumScaleFactor(0.8)
@@ -529,7 +719,41 @@ struct ContentView: View {
                         .frame(height: 36)
                 }
                 .buttonStyle(.bordered)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(
+                            appState.operatingModeSet ? 
+                                (appState.selectedOperatingMode == 0 ? Color.green : Color.clear) : 
+                                Color.red, 
+                            lineWidth: 2
+                        )
+                )
                 
+                Button(action: {
+                    appState.selectedOperatingMode = 1
+                    appState.showSettingsSheet = true
+                }) {
+                    Text("Electric Mode")
+                        .font(.system(size: 14, weight: .medium, design: .default))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 36)
+                }
+                .buttonStyle(.bordered)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(
+                            appState.operatingModeSet ? 
+                                (appState.selectedOperatingMode == 1 ? Color.green : Color.clear) : 
+                                Color.red, 
+                            lineWidth: 2
+                        )
+                )
+            }
+            
+            // JSON commands - single row
+            HStack(spacing: 12) {
                 Button(action: {
                     bleManager.sendFilenamesRequest()
                 }) {
@@ -543,7 +767,6 @@ struct ContentView: View {
                 .buttonStyle(.bordered)
                 
                 Button(action: {
-                    appState.clearMemoryStep = 1
                     appState.showClearMemoryAlert = true
                 }) {
                     Text("Clear Memory")
@@ -556,45 +779,29 @@ struct ContentView: View {
                 .buttonStyle(.bordered)
             }
             
-            // Operating mode buttons
+            // File request dropdown
             HStack(spacing: 12) {
-                Button(action: {
-                    bleManager.setOperatingMode(0)
-                }) {
-                    Text("Mode 0")
-                        .font(.system(size: 14, weight: .medium, design: .default))
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.8)
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 36)
+                Picker("Select File", selection: $appState.requestFileName) {
+                    if appState.availableFiles.isEmpty {
+                        Text("No files available").tag("")
+                    } else {
+                        ForEach(appState.availableFiles, id: \.self) { filename in
+                            Text(filename).tag(filename)
+                        }
+                    }
                 }
-                .buttonStyle(.bordered)
-                
-                Button(action: {
-                    bleManager.setOperatingMode(1)
-                }) {
-                    Text("Mode 1")
-                        .font(.system(size: 14, weight: .medium, design: .default))
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.8)
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 36)
-                }
-                .buttonStyle(.bordered)
-            }
-            
-            // File request input
-            HStack(spacing: 12) {
-                TextField("Enter filename", text: $appState.requestFileName)
-                    .textFieldStyle(RoundedBorderTextFieldStyle())
-                    .font(.system(size: 14, design: .monospaced))
+                .pickerStyle(MenuPickerStyle())
+                .frame(maxWidth: .infinity)
+                .frame(height: 36)
+                .background(Color(.systemGray6))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
                 
                 Button(action: {
                     if !appState.requestFileName.isEmpty {
                         bleManager.startFileTransfer(filename: appState.requestFileName)
                     }
                 }) {
-                    Text("Request")
+                    Text("Transfer Data")
                         .font(.system(size: 14, weight: .medium, design: .default))
                         .lineLimit(1)
                         .minimumScaleFactor(0.8)
@@ -602,7 +809,7 @@ struct ContentView: View {
                         .frame(height: 36)
                 }
                 .buttonStyle(.bordered)
-                .disabled(appState.requestFileName.isEmpty)
+                .disabled(appState.requestFileName.isEmpty || appState.availableFiles.isEmpty)
             }
             
             // File content display area
@@ -614,6 +821,13 @@ struct ContentView: View {
                     Button("Copy") {
                         UIPasteboard.general.string = appState.receivedFileContent
                         appState.log("✓ Copied file content to clipboard (\(appState.receivedFileContent.count) characters)")
+                    }
+                    .buttonStyle(.bordered)
+                    .font(.system(size: 12, weight: .medium, design: .default))
+                    .disabled(appState.receivedFileContent.isEmpty)
+                    
+                    Button("Share") {
+                        appState.showShareSheet = true
                     }
                     .buttonStyle(.bordered)
                     .font(.system(size: 12, weight: .medium, design: .default))
@@ -645,27 +859,38 @@ struct ContentView: View {
         .padding()
         .background(Color(.systemBackground))
         .alert("Clear Memory", isPresented: $appState.showClearMemoryAlert) {
-            Button("Cancel", role: .cancel) {
-                appState.clearMemoryStep = 1
-            }
-            Button(appState.clearMemoryStep == 1 ? "Continue" : "Clear Memory", role: .destructive) {
-                if appState.clearMemoryStep == 1 {
-                    appState.clearMemoryStep = 2
-                    // Show the same alert again with different content
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                        appState.showClearMemoryAlert = true
-                    }
-                } else {
-                    bleManager.clearMemory()
-                    appState.clearMemoryStep = 1
-                }
+            Button("Cancel", role: .cancel) { }
+            Button("Clear Memory", role: .destructive) {
+                bleManager.clearMemory()
             }
         } message: {
-            if appState.clearMemoryStep == 1 {
-                Text("This will clear all memory on the device. Are you sure you want to continue?")
-            } else {
-                Text("This will permanently clear all memory on the device. This action cannot be undone. Are you absolutely sure?")
+            Text("This will permanently clear all memory on the device. This action cannot be undone. Are you absolutely sure?")
+        }
+        .alert("Shelf Mode", isPresented: $appState.showShelfModeAlert) {
+            Button("Cancel", role: .cancel) { }
+            Button("Reset to Shelf Mode", role: .destructive) {
+                bleManager.resetToShelfMode()
             }
+        } message: {
+            Text("This will reset the device to shelf mode. The device will restart and return to its default state. Are you sure?")
+        }
+        .alert("Operating Mode Required", isPresented: $appState.showOperatingModeWarning) {
+            Button("Cancel", role: .cancel) { }
+            Button("Disconnect Anyway", role: .destructive) {
+                bleManager.forceDisconnect()
+            }
+        } message: {
+            Text("You haven't set an operating mode yet. The device will disconnect without a mode selected. Are you sure you want to disconnect?")
+        }
+        .sheet(isPresented: $appState.showShareSheet) {
+            if let fileURL = appState.createShareableFile() {
+                ShareSheet(items: [fileURL], onComplete: {
+                    appState.showShareSheet = false
+                })
+            }
+        }
+        .sheet(isPresented: $appState.showSettingsSheet) {
+            settingsView
         }
     }
     
@@ -677,7 +902,7 @@ struct ContentView: View {
                     ForEach(Array(appState.terminalLog.enumerated()), id: \.offset) { index, log in
                         Text(log)
                             .font(.system(.caption, design: .monospaced))
-                            .foregroundColor(.primary)
+                            .foregroundColor(.green)
                             .textSelection(.enabled)
                     }
                 }
@@ -693,8 +918,174 @@ struct ContentView: View {
             }
         }
         .background(Color(.systemGray6))
-        .frame(maxHeight: 150)
+        .frame(maxHeight: 150 )
     }
+    
+    // MARK: - Settings View
+    private var settingsView: some View {
+        NavigationView {
+            VStack(spacing: 20) {
+                if let mode = appState.selectedOperatingMode {
+                    if mode == 0 {
+                        // Social Mode Settings
+                        VStack(alignment: .leading, spacing: 16) {
+                            Text("Social Mode Settings")
+                                .font(.system(size: 20, weight: .bold, design: .default))
+                                .foregroundColor(.primary)
+                            
+                            VStack(alignment: .leading, spacing: 12) {
+                                Text("Advertising Interval (seconds)")
+                                    .font(.system(size: 16, weight: .medium, design: .default))
+                                
+                                HStack {
+                                    Slider(value: Binding(
+                                        get: { Double(appState.advInterval) },
+                                        set: { appState.advInterval = Int($0) }
+                                    ), in: 1...60, step: 1)
+                                    Text("\(appState.advInterval)s")
+                                        .font(.system(size: 14, weight: .medium, design: .monospaced))
+                                        .frame(width: 40)
+                                }
+                            }
+                            
+                            VStack(alignment: .leading, spacing: 12) {
+                                Text("Scanning Interval (seconds)")
+                                    .font(.system(size: 16, weight: .medium, design: .default))
+                                
+                                HStack {
+                                    Slider(value: Binding(
+                                        get: { Double(appState.scanInterval) },
+                                        set: { appState.scanInterval = Int($0) }
+                                    ), in: 1...60, step: 1)
+                                    Text("\(appState.scanInterval)s")
+                                        .font(.system(size: 14, weight: .medium, design: .monospaced))
+                                        .frame(width: 40)
+                                }
+                            }
+                        }
+                        .padding()
+                        .background(Color(.systemGray6))
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                        
+                    } else if mode == 1 {
+                        // Electric Mode Settings - ADC Configuration
+                        VStack(alignment: .leading, spacing: 16) {
+                            Text("Electric Mode Settings")
+                                .font(.system(size: 20, weight: .bold, design: .default))
+                                .foregroundColor(.primary)
+                            
+                            VStack(alignment: .leading, spacing: 12) {
+                                Text("ADC Mode")
+                                    .font(.system(size: 16, weight: .medium, design: .default))
+                                
+                                Picker("ADC Mode", selection: $appState.adcMode) {
+                                    Text("Timer Bursts (0)").tag(0)
+                                    Text("Threshold Events (1)").tag(1)
+                                }
+                                .pickerStyle(SegmentedPickerStyle())
+                            }
+                            
+                            VStack(alignment: .leading, spacing: 12) {
+                                Text("ADC Threshold (mV)")
+                                    .font(.system(size: 16, weight: .medium, design: .default))
+                                
+                                HStack {
+                                    Slider(value: Binding(
+                                        get: { Double(appState.adcThreshold) },
+                                        set: { appState.adcThreshold = Int($0) }
+                                    ), in: 0...1000, step: 10)
+                                    Text("\(appState.adcThreshold)mV")
+                                        .font(.system(size: 14, weight: .medium, design: .monospaced))
+                                        .frame(width: 60)
+                                }
+                            }
+                            
+                            VStack(alignment: .leading, spacing: 12) {
+                                Text("Buffer Size (samples)")
+                                    .font(.system(size: 16, weight: .medium, design: .default))
+                                
+                                HStack {
+                                    Slider(value: Binding(
+                                        get: { Double(appState.adcBufferSize) },
+                                        set: { appState.adcBufferSize = Int($0) }
+                                    ), in: 1...1000, step: 1)
+                                    Text("\(appState.adcBufferSize)")
+                                        .font(.system(size: 14, weight: .medium, design: .monospaced))
+                                        .frame(width: 50)
+                                }
+                            }
+                            
+                            VStack(alignment: .leading, spacing: 12) {
+                                Text("Debounce (ms)")
+                                    .font(.system(size: 16, weight: .medium, design: .default))
+                                
+                                HStack {
+                                    Slider(value: Binding(
+                                        get: { Double(appState.adcDebounce) },
+                                        set: { appState.adcDebounce = Int($0) }
+                                    ), in: 100...10000, step: 100)
+                                    Text("\(appState.adcDebounce)ms")
+                                        .font(.system(size: 14, weight: .medium, design: .monospaced))
+                                        .frame(width: 70)
+                                }
+                            }
+                            
+                            VStack(alignment: .leading, spacing: 12) {
+                                HStack {
+                                    Text("Peaks Only")
+                                        .font(.system(size: 16, weight: .medium, design: .default))
+                                    Spacer()
+                                    Toggle("", isOn: $appState.adcPeaksOnly)
+                                }
+                            }
+                        }
+                        .padding()
+                        .background(Color(.systemGray6))
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                    }
+                }
+                
+                Spacer()
+            }
+            .padding()
+            .navigationTitle("Device Settings")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button("Cancel") {
+                        appState.showSettingsSheet = false
+                    }
+                }
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Save") {
+                        bleManager.saveSettings()
+                        appState.showSettingsSheet = false
+                    }
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Share Sheet
+struct ShareSheet: UIViewControllerRepresentable {
+    let items: [Any]
+    let onComplete: () -> Void
+    
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        let controller = UIActivityViewController(activityItems: items, applicationActivities: nil)
+        
+        // Set completion handler to hide the sheet after sharing
+        controller.completionWithItemsHandler = { _, _, _, _ in
+            DispatchQueue.main.async {
+                onComplete()
+            }
+        }
+        
+        return controller
+    }
+    
+    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
 }
 
 #Preview {
