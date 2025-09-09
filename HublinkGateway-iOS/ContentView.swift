@@ -969,7 +969,7 @@ struct ContentView: View {
                                     Slider(value: Binding(
                                         get: { Double(appState.advInterval) },
                                         set: { appState.advInterval = Int($0) }
-                                    ), in: 1...60, step: 1)
+                                    ), in: 5...60, step: 5)
                                     Text("\(appState.advInterval)s")
                                         .font(.system(size: 14, weight: .medium, design: .monospaced))
                                         .frame(width: 40)
@@ -984,7 +984,7 @@ struct ContentView: View {
                                     Slider(value: Binding(
                                         get: { Double(appState.scanInterval) },
                                         set: { appState.scanInterval = Int($0) }
-                                    ), in: 1...60, step: 1)
+                                    ), in: 5...60, step: 5)
                                     Text("\(appState.scanInterval)s")
                                         .font(.system(size: 14, weight: .medium, design: .monospaced))
                                         .frame(width: 40)
@@ -1036,7 +1036,7 @@ struct ContentView: View {
                                     Slider(value: Binding(
                                         get: { Double(appState.adcBufferSize) },
                                         set: { appState.adcBufferSize = Int($0) }
-                                    ), in: 1...1000, step: 1)
+                                    ), in: 10...1000, step: 10)
                                     Text("\(appState.adcBufferSize)")
                                         .font(.system(size: 14, weight: .medium, design: .monospaced))
                                         .frame(width: 50)
