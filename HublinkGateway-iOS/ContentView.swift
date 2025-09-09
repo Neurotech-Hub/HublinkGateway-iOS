@@ -232,6 +232,13 @@ class BLEManager: NSObject, ObservableObject {
         if let data = payload.data(using: .utf8) {
             connectedPeripheral?.writeValue(data, for: characteristic, type: .withResponse)
             appState.log("SENT: \(payload)")
+            
+            // Clear file-related UI state since memory is cleared
+            DispatchQueue.main.async {
+                self.appState.availableFiles = []
+                self.appState.requestFileName = ""
+                self.appState.receivedFileContent = ""
+            }
         }
     }
     
@@ -489,31 +496,36 @@ extension BLEManager: CBPeripheralDelegate {
             return
         }
         
-        guard let data = characteristic.value,
-              let string = String(data: data, encoding: .utf8) else {
-            appState.log("ERROR: Failed to decode received data as UTF-8")
+        guard let data = characteristic.value else {
+            appState.log("ERROR: No data received from characteristic")
             return
         }
         
-        appState.log("RECEIVED: \(string)")
+        // Log raw data for debugging
+        let hexString = data.map { String(format: "%02X", $0) }.joined()
+        appState.log("RAW DATA: \(hexString)")
         
-        // Handle NFF (No File Found) response
-        if string.trimmingCharacters(in: .whitespacesAndNewlines) == "NFF" {
-            DispatchQueue.main.async {
-                self.appState.log("ERROR: File not found on device")
-                self.appState.receivedFileContent = ""
+        // Try to decode as UTF-8 string first (for commands/responses)
+        if let string = String(data: data, encoding: .utf8) {
+            appState.log("RECEIVED: \(string)")
+            
+            // Handle NFF (No File Found) response
+            if string.trimmingCharacters(in: .whitespacesAndNewlines) == "NFF" {
+                DispatchQueue.main.async {
+                    self.appState.log("ERROR: File not found on device")
+                    self.appState.receivedFileContent = ""
+                }
+                return
             }
-            return
-        }
-        
-        // Handle EOF in file transfer (end of file data)
-        if string.trimmingCharacters(in: .whitespacesAndNewlines) == "EOF" {
-            DispatchQueue.main.async {
-                self.appState.log("✓ File transfer completed")
+            
+            // Handle EOF in file transfer (end of file data)
+            if string.trimmingCharacters(in: .whitespacesAndNewlines) == "EOF" {
+                DispatchQueue.main.async {
+                    self.appState.log("✓ File transfer completed")
+                }
+                return
             }
-            return
-        }
-        
+            
             // Check if this is a filename response and populate the file list
             if string.contains("|") && string.contains(";") && string.contains("EOF") {
                 let components = string.components(separatedBy: ";")
@@ -536,9 +548,22 @@ extension BLEManager: CBPeripheralDelegate {
                     }
                 }
             } else if characteristic.uuid == HublinkUUIDs.fileTransfer {
-            // Handle file transfer data (hex strings from hardware)
-            DispatchQueue.main.async {
-                self.appState.receivedFileContent += string
+                // Handle UTF-8 file content data
+                DispatchQueue.main.async {
+                    // Convert UTF-8 string to hex for display
+                    let hexString = string.utf8.map { String(format: "%02X", $0) }.joined()
+                    self.appState.receivedFileContent += hexString
+                }
+            }
+        } else {
+            // Handle binary data (file content)
+            if characteristic.uuid == HublinkUUIDs.fileTransfer {
+                DispatchQueue.main.async {
+                    // Convert binary data to hex string for display
+                    self.appState.receivedFileContent += hexString
+                }
+            } else {
+                appState.log("WARNING: Received binary data on non-file-transfer characteristic")
             }
         }
     }
