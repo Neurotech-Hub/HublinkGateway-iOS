@@ -348,6 +348,11 @@ class BLEManager: NSObject, ObservableObject {
         // Send timestamp automatically after a brief delay
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
             self.sendTimestamp()
+            
+            // Send file request after timestamp with a short delay
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                self.sendFilenamesRequest()
+            }
         }
     }
 }
@@ -502,8 +507,8 @@ extension BLEManager: CBPeripheralDelegate {
         }
         
         // Log raw data for debugging
-        let hexString = data.map { String(format: "%02X", $0) }.joined()
-        appState.log("RAW DATA: \(hexString)")
+        // let hexString = data.map { String(format: "%02X", $0) }.joined()
+        // appState.log("RAW DATA: \(hexString)")
         
         // Try to decode as UTF-8 string first (for commands/responses)
         if let string = String(data: data, encoding: .utf8) {
@@ -550,9 +555,18 @@ extension BLEManager: CBPeripheralDelegate {
             } else if characteristic.uuid == HublinkUUIDs.fileTransfer {
                 // Handle UTF-8 file content data
                 DispatchQueue.main.async {
-                    // Convert UTF-8 string to hex for display
-                    let hexString = string.utf8.map { String(format: "%02X", $0) }.joined()
-                    self.appState.receivedFileContent += hexString
+                    // Check if the string looks like hex (only contains 0-9, A-F)
+                    let hexPattern = "^[0-9A-Fa-f]+$"
+                    let isHexString = string.range(of: hexPattern, options: .regularExpression) != nil
+                    
+                    if isHexString {
+                        // Hardware sent hex string as UTF-8 text, use it directly
+                        self.appState.receivedFileContent += string.uppercased()
+                    } else {
+                        // Hardware sent regular text, convert to hex
+                        let hexString = data.map { String(format: "%02X", $0) }.joined()
+                        self.appState.receivedFileContent += hexString
+                    }
                 }
             }
         } else {
@@ -706,18 +720,6 @@ struct ContentView: View {
                     .foregroundColor(.white)
                 Spacer()
                 Button(action: {
-                    appState.showShelfModeAlert = true
-                }) {
-                    Text("Shelf Mode")
-                        .font(.system(size: 14, weight: .medium, design: .default))
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.8)
-                        .frame(height: 36)
-                }
-                .buttonStyle(.bordered)
-                .foregroundColor(.orange)
-                
-                Button(action: {
                     bleManager.disconnect()
                 }) {
                     Text("Disconnect")
@@ -780,9 +782,9 @@ struct ContentView: View {
             // JSON commands - single row
             HStack(spacing: 12) {
                 Button(action: {
-                    bleManager.sendFilenamesRequest()
+                    appState.showShelfModeAlert = true
                 }) {
-                    Text("Get Files")
+                    Text("Shelf Mode")
                         .font(.system(size: 14, weight: .medium, design: .default))
                         .lineLimit(1)
                         .minimumScaleFactor(0.8)
@@ -790,6 +792,7 @@ struct ContentView: View {
                         .frame(height: 36)
                 }
                 .buttonStyle(.bordered)
+                .foregroundColor(.orange)
                 
                 Button(action: {
                     appState.showClearMemoryAlert = true
