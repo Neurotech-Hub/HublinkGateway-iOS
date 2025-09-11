@@ -507,7 +507,7 @@ extension BLEManager: CBPeripheralDelegate {
         }
         
         // Log raw data for debugging
-        // let hexString = data.map { String(format: "%02X", $0) }.joined()
+        let hexString = data.map { String(format: "%02X", $0) }.joined()
         // appState.log("RAW DATA: \(hexString)")
         
         // Try to decode as UTF-8 string first (for commands/responses)
@@ -968,7 +968,10 @@ struct ContentView: View {
                                 HStack {
                                     Slider(value: Binding(
                                         get: { Double(appState.advInterval) },
-                                        set: { appState.advInterval = Int($0) }
+                                        set: { 
+                                            let rounded = Int(($0 / 5).rounded()) * 5
+                                            appState.advInterval = max(5, min(60, rounded))
+                                        }
                                     ), in: 5...60, step: 5)
                                     Text("\(appState.advInterval)s")
                                         .font(.system(size: 14, weight: .medium, design: .monospaced))
@@ -983,7 +986,10 @@ struct ContentView: View {
                                 HStack {
                                     Slider(value: Binding(
                                         get: { Double(appState.scanInterval) },
-                                        set: { appState.scanInterval = Int($0) }
+                                        set: { 
+                                            let rounded = Int(($0 / 5).rounded()) * 5
+                                            appState.scanInterval = max(5, min(60, rounded))
+                                        }
                                     ), in: 5...60, step: 5)
                                     Text("\(appState.scanInterval)s")
                                         .font(.system(size: 14, weight: .medium, design: .monospaced))
@@ -1020,7 +1026,10 @@ struct ContentView: View {
                                 HStack {
                                     Slider(value: Binding(
                                         get: { Double(appState.adcThreshold) },
-                                        set: { appState.adcThreshold = Int($0) }
+                                        set: { 
+                                            let rounded = Int(($0 / 10).rounded()) * 10
+                                            appState.adcThreshold = max(0, min(1000, rounded))
+                                        }
                                     ), in: 0...1000, step: 10)
                                     Text("\(appState.adcThreshold)mV")
                                         .font(.system(size: 14, weight: .medium, design: .monospaced))
@@ -1035,7 +1044,10 @@ struct ContentView: View {
                                 HStack {
                                     Slider(value: Binding(
                                         get: { Double(appState.adcBufferSize) },
-                                        set: { appState.adcBufferSize = Int($0) }
+                                        set: { 
+                                            let rounded = Int(($0 / 10).rounded()) * 10
+                                            appState.adcBufferSize = max(10, min(1000, rounded))
+                                        }
                                     ), in: 10...1000, step: 10)
                                     Text("\(appState.adcBufferSize)")
                                         .font(.system(size: 14, weight: .medium, design: .monospaced))

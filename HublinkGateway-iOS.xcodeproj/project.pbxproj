@@ -401,7 +401,7 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "";
-				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "Always use Bluetooth?";
+				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "Bluetooth is required for connecting to peripheral devices.";
 				INFOPLIST_KEY_NSBluetoothPeripheralUsageDescription = "Allow Bluetooth peripheral?";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
@@ -432,7 +432,7 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "";
-				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "Always use Bluetooth?";
+				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "Bluetooth is required for connecting to peripheral devices.";
 				INFOPLIST_KEY_NSBluetoothPeripheralUsageDescription = "Allow Bluetooth peripheral?";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
